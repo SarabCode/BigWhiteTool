@@ -1,0 +1,62 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install CPP Check
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cppcheck
+
+      - name: Run CPP Check
+        run: |
+          cppcheck --enable=all --suppress=missingIncludeSystem \
+          --error-exitcode=1 --xml --xml-version=2 \
+          --output-file=cppcheck-result.xml \
+          src/ include/
+
+      - name: Generate CPP Check Report
+        if: always()
+        uses: jens-zajaczkowski/cppcheck-action@v1.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          xml_file_path: cppcheck-result.xml
+
+  clang-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Clang Format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format
+
+      - name: Run Clang Format
+        run: |
+          find src include -iname *.h -o -iname *.hpp -o -iname *.cpp -o -iname *.c | \
+          xargs clang-format -style=file -i -fallback-style=Google
+
+      - name: Check for changes
+        id: git-check
+        run: |
+          git diff --exit-code || echo "code_changed=true" >> $GITHUB_OUTPUT
+
+      - name: Create Pull Request
+        if: steps.git-check.outputs.code_changed == 'true' && github.event_name == 'pull_request'
+        uses: peter-evans/create-pull-request@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "style: apply clang-format changes"
+          title: "style: apply clang-format changes"
+          body: "Applied clang-format to standardize code style"
+          branch: clang-format-patches￼Enter
