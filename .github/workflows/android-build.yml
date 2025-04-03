@@ -1,62 +1,122 @@
-name: Code Quality
+name: Android Build and Release
 
 on:
   push:
     branches: [ main, develop ]
+    tags:
+      - 'v*.*.*'
   pull_request:
     branches: [ main, develop ]
 
+env:
+  NDK_VERSION: 26.1.10909125
+
 jobs:
-  static-analysis:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a]
+        include:
+          - abi: arm64-v8a
+            run_tests: true
+          - abi: armeabi-v7a
+            run_tests: false
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0  # Fetch all history for proper versioning
+
+    - name: Set up JDK
+      uses: actions/setup-java@v3
+      with:
+        java-version: '11'
+        distribution: 'temurin'
+
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v2
+
+    - name: Cache NDK
+      uses: actions/cache@v3
+      id: cache-ndk
+      with:
+        path: ${{ runner.temp }}/android-ndk
+        key: ${{ runner.os }}-ndk-${{ env.NDK_VERSION }}
+
+    - name: Setup Android NDK
+      if: steps.cache-ndk.outputs.cache-hit != 'true'
+      run: |
+        ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager --install "ndk;${{ env.NDK_VERSION }}"
+        mkdir -p ${{ runner.temp }}/android-ndk
+        cp -r ${ANDROID_SDK_ROOT}/ndk/${{ env.NDK_VERSION }}/* ${{ runner.temp }}/android-ndk/
+
+    - name: Set NDK path
+      run: echo "ANDROID_NDK_PATH=${{ runner.temp }}/android-ndk" >> $GITHUB_ENV
+
+    - name: Cache CMake build
+      uses: actions/cache@v3
+      with:
+        path: build
+        key: ${{ runner.os }}-cmake-${{ matrix.abi }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
+        restore-keys: |
+          ${{ runner.os }}-cmake-${{ matrix.abi }}-
+
+    - name: Configure CMake
+      run: |
+        mkdir -p build
+        cd build
+        cmake .. \
+          -DCMAKE_TOOLCHAIN_FILE=${{ env.ANDROID_NDK_PATH }}/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=${{ matrix.abi }} \
+          -DBUILD_TESTS=${{ matrix.run_tests }} \
+          -DENABLE_DUMPER=OFF
+
+    - name: Build
+      run: |
+        cd build
+        cmake --build . --config Release -j$(nproc)
+
+    - name: Run Tests
+      if: matrix.run_tests
+      run: |
+        cd build
+        ctest -C Release --output-on-failure
+
+    - name: Package artifacts
+      run: |
+        cd build
+        cmake --install . --prefix ../install-${{ matrix.abi }}
+        cd ..
+        zip -r BigWhiteTool-${{ matrix.abi }}.zip install-${{ matrix.abi }}/*
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: BigWhiteTool-${{ matrix.abi }}
+        path: BigWhiteTool-${{ matrix.abi }}.zip
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Install CPP Check
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cppcheck
-
-      - name: Run CPP Check
-        run: |
-          cppcheck --enable=all --suppress=missingIncludeSystem \
-          --error-exitcode=1 --xml --xml-version=2 \
-          --output-file=cppcheck-result.xml \
-          src/ include/
-
-      - name: Generate CPP Check Report
-        if: always()
-        uses: jens-zajaczkowski/cppcheck-action@v1.0
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          xml_file_path: cppcheck-result.xml
+          path: artifacts
 
-  clang-format:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
+      - name: Display structure of downloaded files
+        run: ls -R artifacts/
 
-      - name: Install Clang Format
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-format
-
-      - name: Run Clang Format
-        run: |
-          find src include -iname *.h -o -iname *.hpp -o -iname *.cpp -o -iname *.c | \
-          xargs clang-format -style=file -i -fallback-style=Google
-
-      - name: Check for changes
-        id: git-check
-        run: |
-          git diff --exit-code || echo "code_changed=true" >> $GITHUB_OUTPUT
-
-      - name: Create Pull Request
-        if: steps.git-check.outputs.code_changed == 'true' && github.event_name == 'pull_request'
-        uses: peter-evans/create-pull-request@v4
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "style: apply clang-format changes"
-          title: "style: apply clang-format changes"
-          body: "Applied clang-format to standardize code style"
-          branch: clang-format-patches￼Enter
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/BigWhiteTool-*/BigWhiteTool-*.zip
+          generate_release_notes: true
