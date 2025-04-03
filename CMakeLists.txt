@@ -1,77 +1,120 @@
 cmake_minimum_required(VERSION 3.21)
-# 设置NDK路径
-set(NDK_PATH D:/Path/android-ndk-r26b)
 
-##################### Android设置 #####################
-set(CMAKE_SYSTEM_NAME ANDROID) # 设置目标编译平台参数 Android
-set(CMAKE_BUILD_TYPE Release)
-set(CMAKE_SYSTEM_VERSION 21) # 系统版本
-set(ANDROID_PLATFORM 21) # 平台版本
-set(ANDROID_SDK_TOOLS_VERSION 20) # 平台版本
-set(ANDROID_ABI arm64-v8a) # 设置目标构架 armeabi-v7a arm64-v8a x86 x86_64
-set(ANDROID_NDK ${NDK_PATH}) # 设置ndk路径
-set(CMAKE_TOOLCHAIN_FILE ${NDK_PATH}/build/cmake/android.toolchain.cmake)
-set(ANDROID_SDK_ROOT ${NDK_PATH})
-
-
+# Project configuration
 project(BigWhiteTool)
-
-
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_BUILD_TYPE Release)
 
-##################### 输出文件重定向 #####################
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY
-        ${CMAKE_SOURCE_DIR}/outputs/${CMAKE_ANDROID_ARCH_ABI}/
-        ) # 重定向输出产物(可执行文件)
-##################### 输出文件重定向 #####################
+# NDK path configuration (using a variable with clear name)
+set(ANDROID_NDK_PATH "${CMAKE_SOURCE_DIR}/android-ndk")
+# Allow overriding NDK path via environment variable or command line
+if(DEFINED ENV{ANDROID_NDK_PATH})
+    set(ANDROID_NDK_PATH $ENV{ANDROID_NDK_PATH})
+endif()
+if(DEFINED ANDROID_NDK_PATH_OVERRIDE)
+    set(ANDROID_NDK_PATH ${ANDROID_NDK_PATH_OVERRIDE})
+endif()
 
-##################### CMake头文件设置 #####################
-# 遍历子目录下所有符合情况的头文件
-FILE(GLOB_RECURSE FILE_INCLUDES include/*.h*)
-include_directories( # 设置全局头文件目录 使其他源码文件可在任意目录<头文件.h>
-        include/
-        include/ImGui
-        include/Android_touch
-        include/Android_shm
-        include/native_surface
-        include/Android_draw
-        include/Android_dump
-        include/request
-        include/tools
-        )
-##################### CMake头文件设置 #####################
+# Android configuration
+set(CMAKE_SYSTEM_NAME ANDROID)
+set(CMAKE_SYSTEM_VERSION 21)
+set(ANDROID_PLATFORM 21)
+set(ANDROID_SDK_TOOLS_VERSION 20)
+set(ANDROID_ABI arm64-v8a) # Default architecture
+set(ANDROID_NDK ${ANDROID_NDK_PATH})
+set(CMAKE_TOOLCHAIN_FILE ${ANDROID_NDK_PATH}/build/cmake/android.toolchain.cmake)
+set(ANDROID_SDK_ROOT ${ANDROID_NDK_PATH})
 
-##################### CMake源文件设置 #####################
-FILE(GLOB_RECURSE FILE_SOURCES # 遍历子目录下所有符合情况的源文件
-        src/*.c*
-        )
-##################### CMake源文件设置 #####################
+# Support multiple architectures in CI/CD environment
+if(DEFINED ENV{TARGET_ABI})
+    set(ANDROID_ABI $ENV{TARGET_ABI})
+endif()
 
-##################### 设置三方库文件目录 #####################
-link_directories(
-        ffmpeg/lib/${ANDROID_ABI}
+# Output file directories - organized by architecture
+set(OUTPUT_DIR ${CMAKE_SOURCE_DIR}/outputs/${ANDROID_ABI})
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${OUTPUT_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${OUTPUT_DIR}/lib)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${OUTPUT_DIR}/lib)
+
+# Version information from Git (for CI/CD)
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} describe --tags --always
+        OUTPUT_VARIABLE GIT_VERSION
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+        OUTPUT_VARIABLE GIT_COMMIT_HASH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    add_definitions(-DGIT_VERSION="${GIT_VERSION}")
+    add_definitions(-DGIT_COMMIT_HASH="${GIT_COMMIT_HASH}")
+    message(STATUS "Git version: ${GIT_VERSION}")
+    message(STATUS "Git commit: ${GIT_COMMIT_HASH}")
+endif()
+
+# Header files
+set(INCLUDE_DIRS
+    include/
+    include/ImGui
+    include/Android_touch
+    include/Android_shm
+    include/native_surface
+    include/Android_draw
+    include/Android_dump
+    include/request
+    include/tools
 )
-#[[
-add_library(biu STATIC IMPORTED)
-set_target_properties(biu PROPERTIES IMPORTED_LOCATION ${CMAKE_SOURCE_DIR}/libs/libbiu.a)
-]]
+include_directories(${INCLUDE_DIRS})
 
+# Gather all header and source files
+file(GLOB_RECURSE FILE_INCLUDES include/*.h*)
+file(GLOB_RECURSE FILE_SOURCES src/*.c*)
 
-##################### 设置三方库文件目录 #####################
-#add_subdirectory(DumperSDK)
+# Third-party libraries
+link_directories(ffmpeg/lib/${ANDROID_ABI})
 
-##################### 添加产物 #####################
-add_executable(BigWhiteTool # 生成可执行文件
-        ${FILE_INCLUDES} # 头文件
-        ${FILE_SOURCES} # 源文件
-        src/BigWhiteTool.cpp)
+# Uncomment to use static libraries
+# add_library(biu STATIC IMPORTED)
+# set_target_properties(biu PROPERTIES IMPORTED_LOCATION ${CMAKE_SOURCE_DIR}/libs/libbiu.a)
 
+# Optional components
+option(BUILD_TESTS "Build test suite" OFF)
+option(ENABLE_DUMPER "Enable dumper functionality" OFF)
 
+# Main executable target
+add_executable(BigWhiteTool
+    ${FILE_INCLUDES}
+    ${FILE_SOURCES}
+    src/BigWhiteTool.cpp
+)
 
-##################### 连接库文件 #####################
-# 可以整合第三方库 需要打开注释即可
-target_link_libraries(BigWhiteTool PRIVATE EGL GLESv3 log
-        android
-        #biu
-#        UE5Dumper
-        )
+# Link libraries
+target_link_libraries(BigWhiteTool PRIVATE
+    EGL
+    GLESv3
+    log
+    android
+    # Add any conditional libraries below
+)
+
+# Conditionally include the dumper SDK
+if(ENABLE_DUMPER)
+    add_subdirectory(DumperSDK)
+    target_link_libraries(BigWhiteTool PRIVATE UE5Dumper)
+endif()
+
+# Installation rules for CI/CD
+install(TARGETS BigWhiteTool
+    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+)
+
+# Add tests if enabled
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
